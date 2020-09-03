@@ -10,8 +10,6 @@ echowarn() {
     printf "\033[1;33m$1\033[0m"
 }
 
-vgreduce BonusVolGroup --removemissing --force
-
 #获取系统盘符，应对系统盘不是sda的情况
 root_type=$(lsblk -ar 2>>/dev/null | grep -w "/" | awk '{print $(NF-1)}')
 root_name=$(lsblk -ar 2>>/dev/null | grep -w "/" | awk '{print $1}')
@@ -33,17 +31,31 @@ if [[ -z "${root_disk}" ]]; then
     exit 1
 fi
 
+#环境检测，检测是否为多盘
+disk_support=$(cat /lib/systemd/system/bxc-node.service | grep -q 'devoff' ;echo $?)
+if [[ ${disk_support} == 1 ]]; then 
+    printf "Enabling multi-disk function, please wait... \n"
+	printf "正在打开多盘功能，请稍候... \n"
+	systemctl stop bxc-node.service
+	sed -i 's/node --alsologtostderr/node --devoff --alsologtostderr/g' /lib/systemd/system/bxc-node.service
+	change="1"
+else
+	printf "系统环境已经支持多盘，无需操作... \n"
+fi
+
+vg_check=$(vgs | grep -q "BonusVolGroup" ;echo $?)
+[[ ${vg_check} == 1 ]] && vgcreate BonusVolGroup
+vgreduce BonusVolGroup --removemissing --force
+
 roots_disk=$(ls /dev/* | grep "${root_disk}" | sed -n 1p)
 roots_part=$(fdisk -l | grep "${roots_disk}" | grep "LVM" | awk '{print $1}')
 vg_have=$(pvs 2>/dev/null | grep "${roots_disk}" | grep -q "BonusVolGroup" ;echo $?)
 pv_have=$(fdisk -l | grep "${roots_disk}" | grep -q "LVM" ;echo $?)
-if [[ ${pv_have} == 0 ]]; then
+if [[ ${pv_have} == 0 && ${vg_have} == 1 ]]; then
     echowarn "\nNow Processing / 正在处理： "
     echoinfo "${roots_disk} \n"
-	[[ ${vg_have} == 0 ]] && printf "Already done, skip! \n"
-	[[ ${vg_have} == 1 ]] && pvcreate ${roots_part}
-    [[ ${vg_have} == 1 ]] && vgcreate BonusVolGroup ${roots_part}
-    [[ ${vg_have} == 1 ]] && vgextend BonusVolGroup ${roots_part}
+    pvcreate ${roots_part}
+    vgextend BonusVolGroup ${roots_part}
 fi
 
 for sd in $(ls /dev/* | grep -E '((sd[a-z]$)|(vd[a-z]$)|(hd[a-z]$)|(nvme[0-9][a-z][0-9]$))' | grep -v "${root_disk}" | sort); do
@@ -64,37 +76,53 @@ for sd in $(ls /dev/* | grep -E '((sd[a-z]$)|(vd[a-z]$)|(hd[a-z]$)|(nvme[0-9][a-
 	#清除磁盘残留信息，防止不能做lvm
 	wipefs -a ${sd}
 	pvcreate ${sd}
-	vgcreate BonusVolGroup ${sd}
+	
 	vgextend BonusVolGroup ${sd}
 done
 
 vgreduce BonusVolGroup --removemissing --force
 
 free_space=$(vgdisplay | grep 'VG Size' | awk '{print $3,$4}' | sed -r 's/\i//g')
-if [[ ${free_space} > 101 ]]; then 
+if [[ ${free_space} > 100 ]]; then 
     echowarn "\nTotal cache space / 总可用缓存空间: "
 	echoinfo "${free_space} \n"
 
-	root_pv=$(fdisk -l | grep "${roots_disk}" | grep -q "LVM" ;echo $?)
-	root_vg=$(pvs 2>/dev/null | grep "${roots_disk}" | grep -q "BonusVolGroup" ;echo $?)
-	echowarn "${roots_disk} "
-	if [[ ${root_pv} == 0 && ${root_vg} == 0 ]]; then
-		echoinfo "is already in the VG volume and is the root disk. / 该磁盘已加入VG卷且为系统盘。 \n"
+	disk_support=$(cat /lib/systemd/system/bxc-node.service | grep -q 'devoff' ;echo $?)
+	echowarn "Multi-disk support / 多盘支持: "
+	if [[ ${disk_support} == 0 ]]; then
+	    echoinfo "√ \n"
 	else
-	    echoinfo "is the root disk. \n"
+	    echoerr "× \n"
+	fi
+
+	root_pv=$(pvs 2>/dev/null | grep -q "${roots_disk}" ;echo $?)
+	root_vg=$(pvs 2>/dev/null | grep "${roots_disk}" | grep -q "BonusVolGroup" ;echo $?)
+	echowarn "${roots_disk}: \t"
+	if [[ ${root_pv} == 0 && ${root_vg} == 0 ]]; then
+		echoinfo "√ \t root disk \n"
+	else
+	    echoinfo "root disk \n"
 	fi
 
 	for sd in $(ls /dev/* | grep -E '((sd[a-z]$)|(vd[a-z]$)|(hd[a-z]$)|(nvme[0-9][a-z][0-9]$))' | grep -v "${root_disk}" | sort); do
 	    pv_have=$(pvs 2>/dev/null | grep -q "${sd}" ;echo $?)
         vg_have=$(pvs 2>/dev/null | grep "${sd}" | grep -q "BonusVolGroup" ;echo $?)
-	    echowarn "${sd} "
+	    echowarn "${sd}: \t"
 	    if [[ ${pv_have} == 0 && ${vg_have} == 0 ]]; then
-	        echoinfo "is already in the VG volume. / 该磁盘已加入VG卷。 \n"
+	        echoinfo "Success √ \n"
 	    else 
-	        echoerr "is not in the VG volume! Please try again! / 该磁盘未加入VG卷！请重试！ \n"
+	        echoerr "Failed × \t Please try again! \n"
 	    fi
     done
 else
     echoerr "The available space is less than 100G, please replace the larger disk and try again! \n"
-	echoerr "可用空间不足100G，请更换更大的磁盘后重试! \n"
+	echoerr "可用空间达不到最低要求，请更换更大的磁盘后重试! \n"
+fi
+
+if [[ ${change} == "1" ]]; then
+    printf "The system needs to be restarted after 10 seconds because the system function has been modified. \n"
+	printf "由于修改过系统功能，需要在10秒后重启系统。Press CTRL-C to suspend / 按CTRL-C 停止 \n"
+    sync
+    sleep 10
+    reboot
 fi
