@@ -10,7 +10,23 @@ echowarn() {
     printf "\033[1;33m$1\033[0m"
 }
 
-for sd in $(fdisk -l | grep -E 'Disk /dev/((sd)|(vd)|(hd))' | sed 's/Disk //g' | sed 's/\://g' | awk '{print $1}' | sort); do
+#环境检测，检测是否为多盘
+disk_support=$(cat /lib/systemd/system/bxc-node.service | grep -q 'devoff' ;echo $?)
+if [[ ${disk_support} == 1 ]]; then 
+    printf "Enabling multi-disk function, please wait... \n"
+	printf "正在打开多盘功能，请稍候... \n"
+	sed -i 's/node --logtostderr/node --devoff --logtostderr/g' /lib/systemd/system/bxc-node.service
+	systemctl daemon-reload
+	systemctl restart bxc-node.service
+else
+	printf "系统环境已经支持多盘，无需操作... \n"
+fi
+
+vg_check=$(vgs | grep -q "BonusVolGroup" ;echo $?)
+[[ ${vg_check} == 1 ]] && vgcreate BonusVolGroup
+vgreduce BonusVolGroup --removemissing --force
+
+for sd in $(fdisk -l | grep -E 'Disk /dev/((sd[a-z]$)|(vd[a-z]$)|(hd[a-z]$)|(nvme[0-9][a-z][0-9]$))' | sed 's/Disk //g' | sed 's/\://g' | awk '{print $1}' | sort); do
 	vg_have=$(pvs 2>/dev/null | grep "${sd}" | grep -q "BonusVolGroup" ;echo $?)
 	echowarn "Now Processing / 正在处理： "
 	echoinfo "${sd} \n"
@@ -28,7 +44,6 @@ for sd in $(fdisk -l | grep -E 'Disk /dev/((sd)|(vd)|(hd))' | sed 's/Disk //g' |
 	#清除磁盘残留信息，防止不能做lvm
 	wipefs -a ${sd} 2>/dev/null
 	pvcreate ${sd} 2>/dev/null
-	vgcreate BonusVolGroup ${sd} 2>/dev/null
 	vgextend BonusVolGroup ${sd} 2>/dev/null
 done
 
@@ -39,14 +54,22 @@ if [[ ${free_space} > 101 ]]; then
     echowarn "\nTotal cache space / 总可用缓存空间: "
 	echoinfo "${free_space} \n"
 
+	disk_support=$(cat /lib/systemd/system/bxc-node.service | grep -q 'devoff' ;echo $?)
+	echowarn "Multi-disk support / 多盘支持: "
+	if [[ ${disk_support} == 0 ]]; then
+	    echoinfo "√ \n"
+	else
+	    echoerr "× \n"
+	fi
+
 	for sd in $(fdisk -l | grep -E 'Disk /dev/((sd)|(vd)|(hd))' | sed 's/Disk //g' | sed 's/\://g' | awk '{print $1}' | sort); do
 	    pv_have=$(pvs 2>/dev/null | grep -q "${sd}" ;echo $?)
         vg_have=$(pvs 2>/dev/null | grep "${sd}" | grep -q "BonusVolGroup" ;echo $?)
-	    echowarn "${sd} "
+	    echowarn "${sd} \t"
 	    if [[ ${pv_have} == 0 && ${vg_have} == 0 ]]; then
-	        echoinfo "is already in the VG volume. / 该磁盘已加入VG卷。 \n"
+	        echoinfo "Success √ \n"
 	    else 
-	        echoerr "is not in the VG volume! Please try again! / 该磁盘未加入VG卷！请重试！ \n"
+	        echoerr "Failed × \t Please try again! \n"
 	    fi
     done
 else
