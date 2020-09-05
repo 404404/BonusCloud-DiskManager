@@ -36,9 +36,9 @@ disk_support=$(cat /lib/systemd/system/bxc-node.service | grep -q 'devoff' ;echo
 if [[ ${disk_support} == 1 ]]; then 
     printf "Enabling multi-disk function, please wait... \n"
 	printf "正在打开多盘功能，请稍候... \n"
-	systemctl stop bxc-node.service
-	sed -i 's/node --alsologtostderr/node --devoff --alsologtostderr/g' /lib/systemd/system/bxc-node.service
-	change="1"
+	sed -i  's/nodeapi/node /nodeapi/node --devoff /1' /lib/systemd/system/bxc-node.service
+	systemctl daemon-reload
+	systemctl restart bxc-node
 else
 	printf "系统环境已经支持多盘，无需操作... \n"
 fi
@@ -117,12 +117,4 @@ if [[ ${free_space} > 100 ]]; then
 else
     echoerr "The available space is less than 100G, please replace the larger disk and try again! \n"
 	echoerr "可用空间达不到最低要求，请更换更大的磁盘后重试! \n"
-fi
-
-if [[ ${change} == "1" ]]; then
-    printf "The system needs to be restarted after 10 seconds because the system function has been modified. \n"
-	printf "由于修改过系统功能，需要在10秒后重启系统。Press CTRL-C to suspend / 按CTRL-C 停止 \n"
-    sync
-    sleep 10
-    reboot
 fi
